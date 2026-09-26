@@ -1,0 +1,1092 @@
+{
+  "name": "Triage de RQs con IA — Entrega Final Coderhouse",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "maxResults": 5,
+        "filters": {
+          "q": "has:attachment subject:RQ",
+          "readStatus": "unread"
+        },
+        "options": {
+          "dataPropertyAttachmentsPrefixName": "attachment_",
+          "downloadAttachments": true
+        }
+      },
+      "id": "b48d1f00-549c-4dbc-9b3f-da5c97b29137",
+      "name": "01 Gmail Trigger - RQ Recibida",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -400,
+        0
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "vMqkxPhAf5Dzdhrz",
+          "name": "Gmail account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "attachment_0",
+        "options": {
+          "headerRow": true,
+          "includeEmptyCells": true
+        }
+      },
+      "id": "a543c3c0-615b-4cb0-ba68-5f069bb67e67",
+      "name": "02 Extraer Items del Adjunto",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -176,
+        0
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "databasePage",
+        "dataSourceId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "04d9143c-8a05-4903-9c75-36effb637116"
+        },
+        "title": "Fallo al leer el adjunto de la RQ",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Timestamp|date",
+              "type": "date",
+              "date": "={{ $now.toISO() }}"
+            },
+            {
+              "key": "Nodo|rich_text",
+              "type": "rich_text",
+              "textContent": "02 Extraer Items del Adjunto"
+            },
+            {
+              "key": "Tipo de evento|select",
+              "type": "select",
+              "selectValue": "Error parseo archivo"
+            },
+            {
+              "key": "Resultado|select",
+              "type": "select",
+              "selectValue": "Fallo"
+            },
+            {
+              "key": "Detalle|rich_text",
+              "type": "rich_text",
+              "textContent": "=Asunto: {{ $(\"01 Gmail Trigger - RQ Recibida\").first().json.subject || $(\"01 Gmail Trigger - RQ Recibida\").first().json.Subject || \"sin asunto\" }} | Error: {{ $json.error && $json.error.message ? $json.error.message : \"El adjunto no pudo interpretarse como XLSX.\" }}"
+            },
+            {
+              "key": "Ítems procesados|number",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "98fdf507-af22-4642-95cb-923e52d000ee",
+      "name": "E1 Log - Error de Parseo de Archivo",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 3,
+      "position": [
+        32,
+        192
+      ],
+      "credentials": {
+        "notionOAuth2Api": {
+          "id": "shCqGNCoHjSOShXK",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json);\nconst trg = $(\"01 Gmail Trigger - RQ Recibida\").first().json;\nconst subject = String(trg.subject || trg.Subject || \"\");\nconst m = subject.match(/RQ[-\\s]?0*(\\d+)/i);\nconst folio = m ? (\"RQ-\" + String(m[1]).padStart(4, \"0\")) : (\"RQ-\" + $now.toFormat(\"yyyyLLddHHmm\"));\nlet remitente = \"\";\nif (typeof trg.from === \"string\") { remitente = trg.from; }\nelse if (trg.from && trg.from.value && trg.from.value[0]) { remitente = trg.from.value[0].address || \"\"; }\nlet archivoAdjunto = \"\";\nif (trg.binary && trg.binary.attachment_0 && trg.binary.attachment_0.fileName) { archivoAdjunto = trg.binary.attachment_0.fileName; }\nconst norm = (s) => String(s === null || s === undefined ? \"\" : s).trim();\nconst low = (s) => norm(s).toLowerCase();\nconst CAND_DESC = [\"bien o servicio\", \"descripcion\", \"descripción\", \"concepto\"];\nconst CAND_CANT = [\"cantidad\", \"cant.\"];\nconst CAND_PU = [\"precio unitario\", \"precio\", \"costo unitario\", \"costo\"];\nconst hit = (v, cands) => cands.some(c => v.indexOf(c) !== -1);\n// Filas realmente legibles. Con alwaysOutputData, un adjunto ilegible llega como un objeto vacio.\nconst filasUtiles = rows.filter(r => r && Object.keys(r).length > 0).length;\nlet kDesc = null, kCant = null, kPu = null, dataStart = 0;\nconst first = rows[0] || {};\nconst keys0 = Object.keys(first);\nkDesc = keys0.find(k => hit(low(k), CAND_DESC)) || null;\nif (kDesc) {\n  kCant = keys0.find(k => k !== kDesc && hit(low(k), CAND_CANT)) || null;\n  kPu = keys0.find(k => k !== kDesc && k !== kCant && hit(low(k), CAND_PU)) || null;\n}\nif (!kDesc || !kCant) {\n  kDesc = null; kCant = null; kPu = null;\n  for (let r = 0; r < rows.length; r++) {\n    const row = rows[r];\n    let dk = null, ck = null, pk = null;\n    for (const k of Object.keys(row)) {\n      const v = low(row[k]);\n      if (!v) { continue; }\n      if (!dk && hit(v, CAND_DESC)) { dk = k; }\n      else if (!ck && hit(v, CAND_CANT)) { ck = k; }\n      else if (!pk && hit(v, CAND_PU)) { pk = k; }\n    }\n    if (dk && ck) { kDesc = dk; kCant = ck; kPu = pk; dataStart = r + 1; break; }\n  }\n}\n// Contrato: se busca primero en el asunto y, si no viene, en el encabezado del archivo.\nlet preambulo = keys0.join(\" \");\nconst tope = dataStart > 0 ? dataStart : Math.min(rows.length, 5);\nfor (let r = 0; r < tope; r++) {\n  const row = rows[r];\n  for (const k of Object.keys(row)) { preambulo = preambulo + \" \" + norm(row[k]); }\n}\nconst esMorelos = (s) => /morelos/i.test(s) || /cps\\s*-?\\s*16/i.test(s);\nconst esChiapas = (s) => /chiapas/i.test(s) || /cps\\s*-?\\s*15/i.test(s);\nlet proyecto = \"CPS 15 Chiapas\";\nlet proyectoDetectadoPor = \"valor por defecto\";\nif (esMorelos(subject)) { proyecto = \"CPS 16 Morelos\"; proyectoDetectadoPor = \"asunto del correo\"; }\nelse if (esChiapas(subject)) { proyecto = \"CPS 15 Chiapas\"; proyectoDetectadoPor = \"asunto del correo\"; }\nelse if (esMorelos(preambulo)) { proyecto = \"CPS 16 Morelos\"; proyectoDetectadoPor = \"encabezado del archivo\"; }\nelse if (esChiapas(preambulo)) { proyecto = \"CPS 15 Chiapas\"; proyectoDetectadoPor = \"encabezado del archivo\"; }\nconst items = [];\nif (kDesc && kCant) {\n  for (let r = dataStart; r < rows.length; r++) {\n    const row = rows[r];\n    const desc = norm(row[kDesc]);\n    const cant = Number(kCant ? row[kCant] : 0) || 0;\n    const pu = Number(kPu ? row[kPu] : 0) || 0;\n    if (!desc || cant <= 0) { continue; }\n    items.push({ n: items.length + 1, descripcion: desc, cantidad: cant, precioUnitario: pu, importe: Math.round(cant * pu * 100) / 100 });\n  }\n}\n// Motivo del rechazo, para que el log distinga un archivo ilegible de uno mal estructurado.\nlet motivoRechazo = \"\";\nlet tipoEvento = \"Datos faltantes\";\nif (filasUtiles === 0) {\n  motivoRechazo = \"El adjunto no pudo interpretarse como hoja de calculo: no se obtuvo ninguna fila. Archivo recibido: \" + (archivoAdjunto || \"sin nombre\") + \".\";\n  tipoEvento = \"Error parseo archivo\";\n} else if (!kDesc || !kCant) {\n  motivoRechazo = \"Se leyeron \" + filasUtiles + \" filas pero ninguna contiene a la vez columna de descripcion y de cantidad. Revisar el encabezado del archivo.\";\n} else if (items.length === 0) {\n  motivoRechazo = \"Se identifico el encabezado pero ninguna fila tiene descripcion con cantidad mayor a cero.\";\n}\nconst montoTotal = Math.round(items.reduce((a, b) => a + b.importe, 0) * 100) / 100;\nreturn [{ json: {\n  folio: folio,\n  proyecto: proyecto,\n  proyectoDetectadoPor: proyectoDetectadoPor,\n  subcontratista: \"SIMCO\",\n  encargado: remitente,\n  fechaSolicitud: $now.toISODate(),\n  archivoOrigen: subject,\n  archivoAdjunto: archivoAdjunto,\n  filasLeidas: filasUtiles,\n  columnasDetectadas: { descripcion: kDesc, cantidad: kCant, precioUnitario: kPu, filaInicioDatos: dataStart },\n  motivoRechazo: motivoRechazo,\n  tipoEvento: tipoEvento,\n  items: items,\n  totalItems: items.length,\n  montoTotal: montoTotal,\n  messageId: String(trg.id || \"\")\n} }];"
+      },
+      "id": "34d08bbd-3d9c-47ae-bf5e-d6a60a26c03b",
+      "name": "03 Normalizar Items de la RQ",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        48,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.totalItems }}",
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              },
+              "rightValue": 0
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "79b44cdf-51ad-4fcb-b767-ddc286a85ed8",
+      "name": "04 Hay Items Validos",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        272,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "databasePage",
+        "dataSourceId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "663418e8-cffb-424a-98b3-9b1f2a499a2a"
+        },
+        "title": "={{ $json.folio }}",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Proyecto|select",
+              "type": "select",
+              "selectValue": "={{ $json.proyecto }}"
+            },
+            {
+              "key": "Subcontratista|rich_text",
+              "type": "rich_text",
+              "textContent": "={{ $json.subcontratista }}"
+            },
+            {
+              "key": "Encargado del Servicio|rich_text",
+              "type": "rich_text",
+              "textContent": "={{ $json.encargado }}"
+            },
+            {
+              "key": "Fecha de solicitud|date",
+              "type": "date",
+              "includeTime": false,
+              "date": "={{ $json.fechaSolicitud }}"
+            },
+            {
+              "key": "Estatus|select",
+              "type": "select",
+              "selectValue": "Generando"
+            },
+            {
+              "key": "Monto total|number",
+              "type": "number",
+              "numberValue": "={{ $json.montoTotal }}"
+            },
+            {
+              "key": "Archivo origen|rich_text",
+              "type": "rich_text",
+              "textContent": "={{ $json.archivoOrigen }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0d59b828-be09-4151-862e-bbd2f3a0ba7c",
+      "name": "05 Notion - Crear Cabecera RQ",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 3,
+      "position": [
+        480,
+        -96
+      ],
+      "credentials": {
+        "notionOAuth2Api": {
+          "id": "shCqGNCoHjSOShXK",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "databasePage",
+        "operation": "getAll",
+        "dataSourceId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "a343834e-0755-470f-8ae1-fcee06ee23e9"
+        },
+        "returnAll": true,
+        "options": {}
+      },
+      "id": "9ef2f050-7893-44d6-bdef-8470c28e35eb",
+      "name": "06 Notion - Leer Catalogo de Insumos",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 3,
+      "position": [
+        720,
+        32
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "notionOAuth2Api": {
+          "id": "shCqGNCoHjSOShXK",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "databasePage",
+        "operation": "getAll",
+        "dataSourceId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "f3840ce9-54e9-45a8-9bb7-77de34ac4ae6"
+        },
+        "returnAll": true,
+        "filterType": "manual",
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "key": "Estado|select",
+              "type": "select",
+              "condition": "equals",
+              "optionValue": "Confirmada"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2d03acdd-5efa-4a45-a315-0128404c6e36",
+      "name": "07 Notion - Leer Excepciones Vigentes",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 3,
+      "position": [
+        944,
+        32
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "notionOAuth2Api": {
+          "id": "shCqGNCoHjSOShXK",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rq = $(\"03 Normalizar Items de la RQ\").first().json;\nconst rqPageId = $(\"05 Notion - Crear Cabecera RQ\").first().json.id;\nconst catRows = $(\"06 Notion - Leer Catalogo de Insumos\").all().map(i => i.json);\nconst excRows = $input.all().map(i => i.json);\nconst slug = (s) => String(s === null || s === undefined ? \"\" : s).normalize(\"NFD\").replace(/[̀-ͯ]/g, \"\").toLowerCase().replace(/^property_/, \"\").replace(/[^a-z0-9]+/g, \"\");\nconst idx = (row) => { const m = {}; for (const k of Object.keys(row)) { m[slug(k)] = row[k]; } return m; };\nconst val = (m, name) => {\n  const v = m[slug(name)];\n  if (v === null || v === undefined) { return \"\"; }\n  if (Array.isArray(v)) { return v.map(x => (x && x.name) ? x.name : String(x)).join(\", \").trim(); }\n  if (typeof v === \"object\") { return String(v.name || v.value || \"\").trim(); }\n  return String(v).trim();\n};\nconst catalogo = catRows.map(r => { const m = idx(r); return {\n  id: r.id,\n  d: val(m, \"Bien o Servicio\") || val(m, \"name\"),\n  cat: val(m, \"Categoría (Glosario)\"),\n  sub: val(m, \"Subcategoría\"),\n  int: val(m, \"Categoría Interna\"),\n  resp: val(m, \"Corresponde\")\n}; }).filter(r => r.d);\nconst excepciones = excRows.map(r => { const m = idx(r); return {\n  id: r.id,\n  nombre: val(m, \"Excepción\") || val(m, \"name\"),\n  ambito: val(m, \"Ámbito\"),\n  condicion: val(m, \"Condición\"),\n  cat: val(m, \"Categoría (Glosario)\"),\n  resp: val(m, \"Corresponde\"),\n  proyecto: val(m, \"Proyecto\")\n}; }).filter(r => r.nombre);\nconst aplicables = excepciones.filter(e => !e.proyecto || e.proyecto === \"Ambos\" || e.proyecto === rq.proyecto);\nconst conCategoria = catalogo.filter(c => c.cat).length;\nconst payload = {\n  proyecto: rq.proyecto,\n  folio: rq.folio,\n  items: rq.items,\n  excepciones: aplicables,\n  catalogo: catalogo\n};\nreturn [{ json: {\n  rqPageId: rqPageId,\n  folio: rq.folio,\n  totalItems: rq.totalItems,\n  registrosCatalogo: catalogo.length,\n  catalogoConCategoria: conCategoria,\n  registrosExcepciones: aplicables.length,\n  clavesCrudas: Object.keys(catRows[0] || {}),\n  userPrompt: JSON.stringify(payload)\n} }];"
+      },
+      "id": "7d2a3030-50b5-4fa4-ba1b-4d26e60cd952",
+      "name": "08 Construir Prompt de Clasificacion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1168,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5",
+          "cachedResultName": "claude-sonnet-5"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ $json.userPrompt }}"
+            }
+          ]
+        },
+        "options": {
+          "system": "Eres un analista de control presupuestal de una constructora mexicana. Clasificas los items de una requisicion (RQ) que el subcontratista SIMCO presenta a La Cosmopolitana, bajo los contratos CPS 15 Chiapas y CPS 16 Morelos de operacion integral de penales.\n\nTu unica tarea es determinar, para cada item: su Categoria del Glosario, su Subcategoria, y sobre todo QUIEN PAGA (campo \"corresponde\").\n\n## Categorias del Glosario (usa exactamente estos nombres)\n- \"Equipo Mayor\": activos fijos de alto costo e instalacion permanente. Paga La Cosmopolitana.\n- \"Equipo Menor\": equipo movil o de bajo costo con vida util mayor a un anio. Paga La Cosmopolitana.\n- \"Herramientas\": instrumentos de trabajo del personal operativo. Paga SIMCO.\n- \"Refacciones\": piezas de recambio que restituyen la funcion de un activo existente. Paga La Cosmopolitana.\n- \"Insumos y Consumibles\": material que se agota con el uso (filtros, lubricantes, neumaticos, cemento, pintura, limpieza). Paga SIMCO.\n- \"Mano de Obra\": servicios, instalacion, mantenimiento ejecutado por terceros. Paga SIMCO.\n- \"Mobiliario\": muebles y enseres. Paga La Cosmopolitana.\n\n## Jerarquia de decision (respetala en este orden estricto)\n1. EXCEPCION: si alguna excepcion del listado aplica al item, gana sobre todo lo demas. fuente = \"Excepcion\", confianza = \"Alta\", y devuelve excepcionId.\n2. CATALOGO EXACTO: coincidencia literal con un registro del catalogo. fuente = \"Catalogo (exacto)\", confianza = \"Alta\", devuelve matchId.\n3. CATALOGO ANALOGO: existe un registro equivalente (mismo tipo de insumo, distinto modelo o vehiculo). fuente = \"Catalogo (analogo)\", confianza = \"Alta\" o \"Media\", devuelve matchId.\n4. GLOSARIO: sin registro en catalogo, pero la regla general de la categoria es clara. fuente = \"Glosario\", confianza = \"Alta\" o \"Media\".\n5. INVESTIGACION: sin base en catalogo ni regla clara. fuente = \"Investigacion\", confianza = \"Baja\".\n6. REQUIERE CRITERIO: item ambiguo, mixto (mano de obra + refaccion en un mismo concepto), o descripcion insuficiente. fuente = \"Requiere criterio\", confianza = \"Baja\".\n\n## Reglas duras\n- NO inventes. Si la descripcion no alcanza, usa \"Requiere criterio\" con confianza \"Baja\". Es preferible escalar a un humano que adivinar.\n- Un item que mezcla suministro e instalacion en un solo concepto SIEMPRE es \"Requiere criterio\".\n- El campo \"corresponde\" solo acepta \"La Cosmopolitana\" o \"SIMCO\". Si no puedes determinarlo, cadena vacia.\n- La justificacion debe citar la evidencia concreta. Maximo 300 caracteres.\n- matchId y excepcionId deben ser el \"id\" exacto de los listados. Si no aplica, cadena vacia.\n- Se consistente: ante el mismo item y el mismo catalogo, devuelve siempre la misma clasificacion.\n\n## Formato de salida\nResponde UNICAMENTE con un arreglo JSON. Sin texto antes ni despues. Sin bloques de codigo markdown. Un objeto por item recibido, conservando el campo \"n\":\n\n[{\"n\":1,\"categoria\":\"Refacciones\",\"subcategoria\":\"Automotriz - Frenos\",\"corresponde\":\"La Cosmopolitana\",\"fuente\":\"Catalogo (analogo)\",\"confianza\":\"Alta\",\"justificacion\":\"Analogo a balatas Ford F450 del catalogo.\",\"matchId\":\"abc-123\",\"excepcionId\":\"\"}]",
+          "maxTokens": 8000
+        }
+      },
+      "id": "6953c9b5-e6b2-4d23-80d5-9aa73592bdde",
+      "name": "09 Claude - Clasificar Items",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1,
+      "position": [
+        1136,
+        -96
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "anthropicApi": {
+          "id": null,
+          "name": "Gateway credits",
+          "__aiGatewayManaged": true
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Umbral de materialidad para el punto de validacion humana.\n// Solo aplica a items de confianza Media. Importe en MXN sin IVA.\nconst UMBRAL_HITL_MXN = 10000;\n\nconst raw = $input.first().json;\nlet text = \"\";\nif (typeof raw.text === \"string\") { text = raw.text; }\nelse if (Array.isArray(raw.content)) { text = raw.content.map(c => (c && c.text) ? c.text : \"\").join(\"\"); }\nelse if (typeof raw.content === \"string\") { text = raw.content; }\nelse { text = JSON.stringify(raw); }\ntext = text.replace(/```json/gi, \"\").replace(/```/g, \"\").trim();\nconst ini = text.indexOf(\"[\");\nconst fin = text.lastIndexOf(\"]\");\nlet parsed = [];\nif (ini !== -1 && fin > ini) {\n  try { parsed = JSON.parse(text.slice(ini, fin + 1)); } catch (e) { parsed = []; }\n}\nif (!Array.isArray(parsed)) { parsed = []; }\nconst src = $(\"03 Normalizar Items de la RQ\").first().json;\nconst ctx = $(\"08 Construir Prompt de Clasificacion\").first().json;\nconst CAT = [\"Equipo Mayor\", \"Equipo Menor\", \"Herramientas\", \"Refacciones\", \"Insumos y Consumibles\", \"Mano de Obra\", \"Mobiliario\"];\nconst FUENTE = [\"Catálogo (exacto)\", \"Catálogo (análogo)\", \"Glosario\", \"Excepción\", \"Investigación\", \"Requiere criterio\"];\nconst MAPF = { \"Catalogo (exacto)\": \"Catálogo (exacto)\", \"Catalogo (analogo)\": \"Catálogo (análogo)\", \"Excepcion\": \"Excepción\", \"Investigacion\": \"Investigación\" };\nconst CONF = [\"Alta\", \"Media\", \"Baja\"];\nconst RESP = [\"La Cosmopolitana\", \"SIMCO\"];\nreturn src.items.map(it => {\n  const r = parsed.find(p => Number(p.n) === Number(it.n)) || {};\n  const f = MAPF[r.fuente] || r.fuente;\n  const fuente = FUENTE.indexOf(f) !== -1 ? f : \"Requiere criterio\";\n  const confianza = CONF.indexOf(r.confianza) !== -1 ? r.confianza : \"Baja\";\n  const categoria = CAT.indexOf(r.categoria) !== -1 ? r.categoria : \"\";\n  const corresponde = RESP.indexOf(r.corresponde) !== -1 ? r.corresponde : \"\";\n  const importe = Math.round((Number(it.importe) || (Number(it.cantidad) * Number(it.precioUnitario)) || 0) * 100) / 100;\n  let motivo = \"\";\n  if (fuente === \"Investigación\" || fuente === \"Requiere criterio\") {\n    motivo = \"Fuente \" + fuente + \". Se detiene sin importar el monto.\";\n  } else if (confianza === \"Baja\") {\n    motivo = \"Confianza Baja. Se detiene sin importar el monto.\";\n  } else if (confianza === \"Media\" && importe >= UMBRAL_HITL_MXN) {\n    motivo = \"Confianza Media con importe de $\" + importe.toFixed(2) + \" MXN, igual o mayor al umbral de $\" + UMBRAL_HITL_MXN.toFixed(2) + \" MXN.\";\n  }\n  const hitl = motivo ? \"Si\" : \"No\";\n  let just = String(r.justificacion || \"El modelo no devolvio justificacion para este item.\");\n  if (r.matchId) { just = just + \" [Ref. catalogo: \" + r.matchId + \"]\"; }\n  if (r.excepcionId) { just = just + \" [Excepcion: \" + r.excepcionId + \"]\"; }\n  return { json: {\n    rqPageId: ctx.rqPageId,\n    folio: src.folio,\n    n: it.n,\n    descripcion: it.descripcion,\n    cantidad: it.cantidad,\n    precioUnitario: it.precioUnitario,\n    importe: importe,\n    categoria: categoria,\n    subcategoria: String(r.subcategoria || \"\"),\n    corresponde: corresponde,\n    fuente: fuente,\n    confianza: confianza,\n    revisionHumana: hitl,\n    motivoHitl: motivo || \"Clasificado en automatico.\",\n    umbralHitl: UMBRAL_HITL_MXN,\n    justificacion: just.slice(0, 1900),\n    estatus: hitl === \"Si\" ? \"Esperando aprobación\" : \"Procesado por IA\"\n  } };\n});"
+      },
+      "id": "f977dd9f-fb91-44a3-90be-b6af0f95d80a",
+      "name": "10 Parsear Clasificacion IA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1584,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "databasePage",
+        "dataSourceId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "4eb1830c-ca48-43da-8bc9-dd9023d6822a"
+        },
+        "title": "={{ $json.descripcion }}",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "RQ|relation",
+              "type": "relation",
+              "relationValue": [
+                "={{ $json.rqPageId }}"
+              ]
+            },
+            {
+              "key": "Cantidad requerida|number",
+              "type": "number",
+              "numberValue": "={{ $json.cantidad }}"
+            },
+            {
+              "key": "Precio unitario|number",
+              "type": "number",
+              "numberValue": "={{ $json.precioUnitario }}"
+            },
+            {
+              "key": "Categoría (Glosario)|select",
+              "type": "select",
+              "selectValue": "={{ $json.categoria }}"
+            },
+            {
+              "key": "Subcategoría|rich_text",
+              "type": "rich_text",
+              "textContent": "={{ $json.subcategoria }}"
+            },
+            {
+              "key": "Corresponde|select",
+              "type": "select",
+              "selectValue": "={{ $json.corresponde }}"
+            },
+            {
+              "key": "Fuente|select",
+              "type": "select",
+              "selectValue": "={{ $json.fuente }}"
+            },
+            {
+              "key": "Confianza|select",
+              "type": "select",
+              "selectValue": "={{ $json.confianza }}"
+            },
+            {
+              "key": "Revisión Humana Requerida|select",
+              "type": "select",
+              "selectValue": "={{ $json.revisionHumana }}"
+            },
+            {
+              "key": "Justificación IA|rich_text",
+              "type": "rich_text",
+              "textContent": "={{ $json.justificacion }}"
+            },
+            {
+              "key": "Estatus|select",
+              "type": "select",
+              "selectValue": "={{ $json.estatus }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a95b4fa4-4d4c-43d2-95d0-ea1a2674da5d",
+      "name": "11 Notion - Crear Item Clasificado",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 3,
+      "position": [
+        1824,
+        32
+      ],
+      "credentials": {
+        "notionOAuth2Api": {
+          "id": "shCqGNCoHjSOShXK",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const cls = $(\"10 Parsear Clasificacion IA\").all().map(i => i.json);\nconst rq = $(\"03 Normalizar Items de la RQ\").first().json;\nconst ctx = $(\"08 Construir Prompt de Clasificacion\").first().json;\nconst flagged = cls.filter(c => c.revisionHumana === \"Si\");\nconst detalle = flagged.map(c => \"*#\" + c.n + \" \" + c.descripcion + \"*\\n   Importe: $\" + Number(c.importe).toFixed(2) + \" MXN  |  Fuente: \" + c.fuente + \"  |  Confianza: \" + c.confianza + \"  |  Propuesta: \" + (c.corresponde || \"sin determinar\") + \"\\n   Por que se detuvo: \" + c.motivoHitl + \"\\n   _\" + c.justificacion + \"_\").join(\"\\n\\n\");\nconst auto = cls.filter(c => c.revisionHumana === \"No\");\nconst porSimco = cls.filter(c => c.corresponde === \"SIMCO\").length;\nconst porCosmo = cls.filter(c => c.corresponde === \"La Cosmopolitana\").length;\nconst umbral = cls.length ? Number(cls[0].umbralHitl) : 10000;\nconst montoFlagged = Math.round(flagged.reduce((a, b) => a + (Number(b.importe) || 0), 0) * 100) / 100;\nreturn [{ json: {\n  rqPageId: ctx.rqPageId,\n  folio: rq.folio,\n  proyecto: rq.proyecto,\n  montoTotal: rq.montoTotal,\n  messageId: rq.messageId,\n  totalItems: cls.length,\n  flaggedCount: flagged.length,\n  autoCount: auto.length,\n  porSimco: porSimco,\n  porCosmopolitana: porCosmo,\n  umbralHitl: umbral,\n  montoEnRevision: montoFlagged,\n  requiereAprobacion: flagged.length > 0,\n  detalleFlagged: detalle || \"Ninguno\"\n} }];"
+      },
+      "id": "4c007f43-9235-4096-805d-1071a3024b1d",
+      "name": "12 Resumen de Clasificacion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.requiereAprobacion }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2c4d3547-d373-4209-a179-09524263eee9",
+      "name": "13 Requiere Aprobacion Humana",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2240,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "sendAndWait",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "C0C54HFKWQY"
+        },
+        "message": "=:warning: *Requisicion {{ $json.folio }} requiere tu criterio*\n\nProyecto: *{{ $json.proyecto }}*  |  Monto de la RQ: *$ {{ $json.montoTotal }} MXN*\nItems totales: {{ $json.totalItems }} - Clasificados automaticamente: {{ $json.autoCount }} - *Requieren revision: {{ $json.flaggedCount }}*\nImporte detenido: *$ {{ $json.montoEnRevision }} MXN*  |  Umbral de materialidad: $ {{ $json.umbralHitl }} MXN\n\n*Items que se detuvieron:*\n\n{{ $json.detalleFlagged }}\n\nAutorizas enviar esta clasificacion a Procuracion?",
+        "approvalOptions": {
+          "values": {
+            "approvalType": "double",
+            "approveLabel": "Autorizar envio",
+            "disapproveLabel": "Devolver a revision"
+          }
+        },
+        "options": {
+          "limitWaitTime": {
+            "values": {
+              "resumeAmount": 45,
+              "resumeUnit": "minutes"
+            }
+          },
+          "appendAttribution": false
+        }
+      },
+      "id": "11830ee2-de37-4798-8663-724147ce62b6",
+      "name": "14 Slack - Solicitar Aprobacion HITL",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        2432,
+        -192
+      ],
+      "webhookId": "eb8161db-5d8e-4d99-b8cb-3d844fc5a485",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "7S7ov0T8pibtdJgs",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "databasePage",
+        "operation": "update",
+        "pageId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $(\"12 Resumen de Clasificacion\").first().json.rqPageId }}"
+        },
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Estatus|select",
+              "type": "select",
+              "selectValue": "={{ $json.requiereAprobacion === false ? \"Aprobado\" : ($json.data && $json.data.approved === true ? \"Aprobado\" : ($json.data && $json.data.approved === false ? \"Rechazado por humano\" : \"Pendiente\")) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a86f9ad6-4281-4e58-8926-c09251176234",
+      "name": "15 Notion - Cerrar RQ",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 3,
+      "position": [
+        2608,
+        0
+      ],
+      "credentials": {
+        "notionOAuth2Api": {
+          "id": "shCqGNCoHjSOShXK",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "databasePage",
+        "dataSourceId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "04d9143c-8a05-4903-9c75-36effb637116"
+        },
+        "title": "Fallo de la API de Claude al clasificar",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Timestamp|date",
+              "type": "date",
+              "date": "={{ $now.toISO() }}"
+            },
+            {
+              "key": "RQ|relation",
+              "type": "relation",
+              "relationValue": [
+                "={{ $(\"05 Notion - Crear Cabecera RQ\").first().json.id }}"
+              ]
+            },
+            {
+              "key": "Nodo|rich_text",
+              "type": "rich_text",
+              "textContent": "09 Claude - Clasificar Items"
+            },
+            {
+              "key": "Tipo de evento|select",
+              "type": "select",
+              "selectValue": "Error API IA"
+            },
+            {
+              "key": "Resultado|select",
+              "type": "select",
+              "selectValue": "Fallo"
+            },
+            {
+              "key": "Detalle|rich_text",
+              "type": "rich_text",
+              "textContent": "=Agotados los 3 reintentos. Folio {{ $(\"03 Normalizar Items de la RQ\").first().json.folio }}. Error: {{ $json.error && $json.error.message ? $json.error.message : \"sin detalle\" }}. La RQ queda en estatus Generando para reproceso manual."
+            },
+            {
+              "key": "Ítems procesados|number",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "5f50f204-e8b6-4678-af80-681236f5186d",
+      "name": "E2 Log - Error API de Claude",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 3,
+      "position": [
+        1504,
+        96
+      ],
+      "credentials": {
+        "notionOAuth2Api": {
+          "id": "shCqGNCoHjSOShXK",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "C0C54HFKWQY"
+        },
+        "text": "=:rotating_light: *Fallo de clasificacion automatica*\n\nLa RQ {{ $(\"03 Normalizar Items de la RQ\").first().json.folio }} no pudo procesarse: la API de Claude fallo tras 3 reintentos.\nLa cabecera quedo creada en Notion con estatus *Generando*. Requiere reproceso manual.",
+        "otherOptions": {}
+      },
+      "id": "d971628f-7925-4b84-b41d-be3b1e46b2f2",
+      "name": "E2b Slack - Alertar Fallo de IA",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        1728,
+        96
+      ],
+      "webhookId": "f202bcc7-b542-4fb5-b4b5-e2a8ea78bbcc",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "7S7ov0T8pibtdJgs",
+          "name": "Slack account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "databasePage",
+        "dataSourceId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "04d9143c-8a05-4903-9c75-36effb637116"
+        },
+        "title": "RQ recibida sin items legibles",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Timestamp|date",
+              "type": "date",
+              "date": "={{ $now.toISO() }}"
+            },
+            {
+              "key": "Nodo|rich_text",
+              "type": "rich_text",
+              "textContent": "04 Hay Items Validos"
+            },
+            {
+              "key": "Tipo de evento|select",
+              "type": "select",
+              "selectValue": "={{ $json.tipoEvento }}"
+            },
+            {
+              "key": "Resultado|select",
+              "type": "select",
+              "selectValue": "Fallo"
+            },
+            {
+              "key": "Detalle|rich_text",
+              "type": "rich_text",
+              "textContent": "=Folio detectado: {{ $json.folio }}. {{ $json.motivoRechazo }} No se creo cabecera de RQ. Asunto: {{ $json.archivoOrigen }}."
+            },
+            {
+              "key": "Ítems procesados|number",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "3c955d87-1ee6-40b4-98f5-abf423ddbe83",
+      "name": "E3 Log - RQ sin Items Validos",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 3,
+      "position": [
+        480,
+        176
+      ],
+      "credentials": {
+        "notionOAuth2Api": {
+          "id": "shCqGNCoHjSOShXK",
+          "name": "Notion account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "C0C54HFKWQY"
+        },
+        "text": "=:white_check_mark: *{{ $(\"12 Resumen de Clasificacion\").first().json.folio }} lista para Procuracion*\n\nProyecto: {{ $(\"12 Resumen de Clasificacion\").first().json.proyecto }}\nItems clasificados: {{ $(\"12 Resumen de Clasificacion\").first().json.totalItems }}\nA cargo de SIMCO: {{ $(\"12 Resumen de Clasificacion\").first().json.porSimco }} | A cargo de La Cosmopolitana: {{ $(\"12 Resumen de Clasificacion\").first().json.porCosmopolitana }}\nMonto total: $ {{ $(\"12 Resumen de Clasificacion\").first().json.montoTotal }} MXN\n\nDetalle: {{ $json.url }}",
+        "otherOptions": {}
+      },
+      "id": "1e96541a-5cbd-4823-b14c-d15f283dd008",
+      "name": "16 Slack - Notificar a Procuracion",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        2928,
+        -48
+      ],
+      "webhookId": "73a6aedc-568c-43f9-bd0b-dea6ea1e41b0",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "7S7ov0T8pibtdJgs",
+          "name": "Slack account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "markAsRead",
+        "messageId": "={{ $(\"12 Resumen de Clasificacion\").first().json.messageId }}"
+      },
+      "id": "4af954c5-4b30-4d2a-be2a-c20735f9827f",
+      "name": "17 Gmail - Marcar Correo Procesado",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        3136,
+        -48
+      ],
+      "webhookId": "8d48d3c1-6264-4e72-8c23-c03678c74343",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "vMqkxPhAf5Dzdhrz",
+          "name": "Gmail account 2"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.property_estatus }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "Aprobado"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6444aa2d-c08c-4dc9-9b9c-0ea8137f23dd",
+      "name": "18 RQ Aprobada",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2784,
+        0
+      ],
+      "notes": "Solo una RQ aprobada se notifica a Procuracion. El rechazo humano y el vencimiento del plazo se van directo a marcar el correo."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "01 Gmail Trigger - RQ Recibida": {
+      "main": [
+        [
+          {
+            "node": "02 Extraer Items del Adjunto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "02 Extraer Items del Adjunto": {
+      "main": [
+        [
+          {
+            "node": "03 Normalizar Items de la RQ",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "E1 Log - Error de Parseo de Archivo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "03 Normalizar Items de la RQ": {
+      "main": [
+        [
+          {
+            "node": "04 Hay Items Validos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "04 Hay Items Validos": {
+      "main": [
+        [
+          {
+            "node": "05 Notion - Crear Cabecera RQ",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "E3 Log - RQ sin Items Validos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "05 Notion - Crear Cabecera RQ": {
+      "main": [
+        [
+          {
+            "node": "06 Notion - Leer Catalogo de Insumos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "06 Notion - Leer Catalogo de Insumos": {
+      "main": [
+        [
+          {
+            "node": "07 Notion - Leer Excepciones Vigentes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "07 Notion - Leer Excepciones Vigentes": {
+      "main": [
+        [
+          {
+            "node": "08 Construir Prompt de Clasificacion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "08 Construir Prompt de Clasificacion": {
+      "main": [
+        [
+          {
+            "node": "09 Claude - Clasificar Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "09 Claude - Clasificar Items": {
+      "main": [
+        [
+          {
+            "node": "10 Parsear Clasificacion IA",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "E2 Log - Error API de Claude",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10 Parsear Clasificacion IA": {
+      "main": [
+        [
+          {
+            "node": "11 Notion - Crear Item Clasificado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11 Notion - Crear Item Clasificado": {
+      "main": [
+        [
+          {
+            "node": "12 Resumen de Clasificacion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12 Resumen de Clasificacion": {
+      "main": [
+        [
+          {
+            "node": "13 Requiere Aprobacion Humana",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "13 Requiere Aprobacion Humana": {
+      "main": [
+        [
+          {
+            "node": "14 Slack - Solicitar Aprobacion HITL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "15 Notion - Cerrar RQ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "14 Slack - Solicitar Aprobacion HITL": {
+      "main": [
+        [
+          {
+            "node": "15 Notion - Cerrar RQ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "E2 Log - Error API de Claude": {
+      "main": [
+        [
+          {
+            "node": "E2b Slack - Alertar Fallo de IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "16 Slack - Notificar a Procuracion": {
+      "main": [
+        [
+          {
+            "node": "17 Gmail - Marcar Correo Procesado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "15 Notion - Cerrar RQ": {
+      "main": [
+        [
+          {
+            "node": "18 RQ Aprobada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "18 RQ Aprobada": {
+      "main": [
+        [
+          {
+            "node": "16 Slack - Notificar a Procuracion",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "17 Gmail - Marcar Correo Procesado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "2d556097-5438-4eaf-87c7-d2ab4c1f2316",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "d20e9f2d60ff7cac2f5dc1c75c0f767ae709469ec705311e193fb48355d99619"
+  },
+  "nodeGroups": [
+    {
+      "id": "641af08f-44cf-45cf-beb5-755ccb88df4c",
+      "name": "Contexto RAG - Memoria del Sistema",
+      "nodeIds": [
+        "9ef2f050-7893-44d6-bdef-8470c28e35eb",
+        "2d03acdd-5efa-4a45-a315-0128404c6e36",
+        "7d2a3030-50b5-4fa4-ba1b-4d26e60cd952"
+      ],
+      "description": "Recupera el catalogo historico y las excepciones vigentes de Notion y arma el payload que se envia al modelo."
+    },
+    {
+      "id": "271ccc75-5128-4851-a8d6-ecf77e6b007b",
+      "name": "Persistencia y Control",
+      "nodeIds": [
+        "a95b4fa4-4d4c-43d2-95d0-ea1a2674da5d",
+        "4c007f43-9235-4096-805d-1071a3024b1d"
+      ],
+      "description": "Escribe cada item clasificado en Notion y calcula el resumen que decide si se activa el punto de validacion humana."
+    }
+  ],
+  "id": "ntkhJIXjsYUtKBBt",
+  "tags": []
+}
